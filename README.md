@@ -23,6 +23,7 @@ This project uses the MIMIC-IV Clinical Database, a comprehensive dataset contai
 
 ## Project Structure
 
+```
 heart_failure_readmission/
 │
 ├── data/                          # Data directory
@@ -51,6 +52,7 @@ heart_failure_readmission/
 ├── config/                        # Configuration files
 ├── requirements.txt               # The requirements file for reproducing the environment
 └── run_pipeline.sh                # Script to run the complete data pipeline
+```
 
 ## Key Project Goals
 
@@ -94,7 +96,7 @@ heart_failure_readmission/
 
 1. Clone this repository
 ```bash
-git clone <[repository-url](https://github.com/cyranothebard/heart_failure_readmission)>
+git clone https://github.com/cyranothebard/heart_failure_readmission
 cd heart_failure_readmission
 ```
 
