@@ -1,5 +1,33 @@
-venv/
+# Data files
+data/raw/
+data/interim/
+data/processed/
+
+# Ignore all CSV files regardless of location
+*.csv
+
+# Python cache files
 __pycache__/
-*.pyc
-*.pyo
-.ipynb_checkpoints/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Logs
+logs/
+*.log
+
+# OS-specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
