@@ -9,7 +9,17 @@ from sklearn.model_selection import train_test_split
 
 # Add this at the top of make_dataset.py, extract_features.py, and preprocess.py
 def ensure_correct_paths(data_dir):
-    """Ensure that we're using the correct paths for raw, interim, and processed data"""
+    """
+    Ensure that we're using the correct paths for raw, interim, and processed data
+    Parameters:
+    -----------
+    data_dir : str
+        Directory containing MIMIC-IV files
+        
+    Returns:
+    --------
+    base_dir, raw_dir, interim_dir, processed_dir
+    """
     import os
     
     # Normalize the base path
@@ -50,7 +60,7 @@ def ensure_correct_paths(data_dir):
 def create_final_dataset(data_dir):
     """
     Create the final dataset by merging patient and admission features
-    
+
     Parameters:
     -----------
     data_dir : str
@@ -93,6 +103,19 @@ def create_final_dataset(data_dir):
     hf_admissions = pd.read_csv(required_files[0])
     patient_features = pd.read_csv(required_files[1])
     admission_features = pd.read_csv(required_files[2])
+
+    # Check if 'is_readmission' exists in both dataframes to prevent duplication
+    if 'is_readmission' in hf_admissions.columns and 'is_readmission' in admission_features.columns:
+        # Compare the 'is_readmission' columns
+        comparison = (hf_admissions[['hadm_id', 'is_readmission']].set_index('hadm_id') ==
+                      admission_features[['hadm_id', 'is_readmission']].set_index('hadm_id'))['is_readmission']
+        
+        if not comparison.all():
+            raise ValueError("The 'is_readmission' column differs between hf_admissions and admission_features.  "
+                             "Resolve this discrepancy before proceeding.")
+        
+        # Remove duplicate target column
+        admission_features = admission_features.drop('is_readmission', axis=1)
     
     # Merge all features
     print("Merging feature sets...")
@@ -221,6 +244,13 @@ def prepare_data_for_modeling(df, target_col='is_readmission', test_size=0.2, ra
     X_train, X_test, y_train, y_test
     """
     # Separate features and target
+    if target_col not in df.columns:
+        print(f"Target column '{target_col}' not found in DataFrame.")
+        print("Available columns:")
+        for col in df.columns:
+            print(f"- {col}")
+        raise ValueError(f"Target column '{target_col}' not found.")
+    
     X = df.drop(target_col, axis=1)
     y = df[target_col]
     
