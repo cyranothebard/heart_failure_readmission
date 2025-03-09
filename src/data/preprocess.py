@@ -180,7 +180,7 @@ def encode_categorical_features(df, categorical_cols):
     
     # Apply one-hot encoding to categorical columns
     if categorical_cols:
-        encoder = OneHotEncoder(sparse=False, drop='first')
+        encoder = OneHotEncoder(sparse_output=False, drop='first') # changed parameter from sparse to sparce_output, as sparse was depreciated
         encoded_features = encoder.fit_transform(df[categorical_cols])
         
         # Create DataFrame with encoded features
