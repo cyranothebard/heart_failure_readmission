@@ -6,6 +6,14 @@ data/processed/*
 # Ignore all CSV files regardless of location
 *.csv
 
+# Model files
+*.pkl
+models/*.pkl
+
+# Generated plots
+reports/figures/*.png
+*.png
+
 # But keep the directory structure with .gitkeep files
 !data/raw/.gitkeep
 !data/interim/.gitkeep
