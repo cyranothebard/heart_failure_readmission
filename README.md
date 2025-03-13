@@ -118,6 +118,18 @@ pip install -r requirements.txt
    python src/data/download_data.py data/raw
    ```
 
+## Data Setup
+
+This project follows a standard data science workflow with raw, interim, and processed data directories. However, actual data files are not committed to the repository due to their size.
+
+### Initial Setup
+
+1. Clone this repository
+2. Set up your Python environment as described in the Setup section
+3. Run the data directory setup script:
+   ```bash
+   python src/data/setup_data_structure.py
+
 ## Running the Pipeline
 
 Execute the complete data processing pipeline:
@@ -167,6 +179,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - This project is for educational purposes and is not intended for clinical use
 ```
 
-This README provides a comprehensive overview of your project, including its business context, technical approach, setup instructions, and project structure. It's designed to help both technical and non-technical stakeholders understand the project's purpose and implementation.
-
-Feel free to customize it further based on specific details about your implementation or additional information you'd like to include.

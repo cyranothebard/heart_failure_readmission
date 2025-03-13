@@ -1,10 +1,15 @@
 # Data files
-data/raw/
-data/interim/
-data/processed/
+data/raw/*
+data/interim/*
+data/processed/*
 
 # Ignore all CSV files regardless of location
 *.csv
+
+# But keep the directory structure with .gitkeep files
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
 
 # Python cache files
 __pycache__/
