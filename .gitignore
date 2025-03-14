@@ -5,6 +5,7 @@ data/processed/
 
 # Ignore all CSV files regardless of location
 *.csv
+*.pkl
 
 # Python cache files
 __pycache__/
