@@ -13,6 +13,10 @@
 # mkdir -p data/raw data/interim data/processed
 # mkdir -p notebooks/exploratory notebooks/reports
 
+# Set up directory structure
+echo "Setting up data directory structure..."
+python src/data/setup_data_structure.py
+
 # # Download data
 # echo "Step 1: Downloading MIMIC-IV data..."
 # python src/data/download_data.py data/raw

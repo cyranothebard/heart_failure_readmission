@@ -21,6 +21,7 @@ import shap
 import time
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning)
+from src.utils.feature_name_cleaner import clean_feature_names
 
 def load_data(processed_dir):
     """
@@ -48,6 +49,70 @@ def load_data(processed_dir):
     print(f"Positive class (readmissions) in training: {sum(y_train)}/{len(y_train)} ({sum(y_train)/len(y_train):.1%})")
     
     return X_train, X_test, y_train, y_test
+
+def preprocess_features(X_train, X_test):
+    """
+    Handle categorical features by one-hot encoding them.
+    
+    Parameters:
+    -----------
+    X_train : DataFrame
+        Training features
+    X_test : DataFrame
+        Testing features
+        
+    Returns:
+    --------
+    X_train_processed, X_test_processed
+    """
+    # First, remove days_until_readmission to prevent target leakage
+    if 'days_until_readmission' in X_train.columns:
+        print("Removing 'days_until_readmission' to avoid target leakage in readmission prediction")
+        X_train = X_train.drop('days_until_readmission', axis=1)
+    
+    if 'days_until_readmission' in X_test.columns:
+        X_test = X_test.drop('days_until_readmission', axis=1)
+    
+    from sklearn.preprocessing import OneHotEncoder
+    
+    # Identify string columns
+    string_cols = X_train.select_dtypes(include=['object']).columns.tolist()
+    
+    if not string_cols:
+        print("No categorical columns found, returning original data")
+        return X_train, X_test
+    
+    print(f"Found {len(string_cols)} categorical columns to encode")
+    
+    # Keep track of non-string columns
+    non_string_cols = [col for col in X_train.columns if col not in string_cols]
+    
+    # Initialize encoder with parameters compatible with older scikit-learn versions
+    try:
+        # Try newer scikit-learn parameter
+        encoder = OneHotEncoder(sparse_output=False, drop='first', handle_unknown='ignore')
+    except TypeError:
+        # Fallback for older scikit-learn versions
+        encoder = OneHotEncoder(sparse=False, drop='first', handle_unknown='ignore')
+    
+    # Fit and transform training data
+    encoded_train = encoder.fit_transform(X_train[string_cols])
+    encoded_test = encoder.transform(X_test[string_cols])
+    
+    # Get the feature names
+    feature_names = encoder.get_feature_names_out(string_cols)
+    
+    # Create new DataFrames with encoded features
+    encoded_train_df = pd.DataFrame(encoded_train, columns=feature_names, index=X_train.index)
+    encoded_test_df = pd.DataFrame(encoded_test, columns=feature_names, index=X_test.index)
+    
+    # Combine with non-string columns
+    X_train_processed = pd.concat([X_train[non_string_cols], encoded_train_df], axis=1)
+    X_test_processed = pd.concat([X_test[non_string_cols], encoded_test_df], axis=1)
+    
+    print(f"Data shape after encoding: {X_train_processed.shape}")
+    
+    return X_train_processed, X_test_processed
 
 def select_features(X_train, y_train, X_test, method='l1', threshold='median', max_features=None):
     """
@@ -186,43 +251,24 @@ def train_random_forest(X_train, y_train, class_weight='balanced'):
     
     return model
 
-def train_lightgbm(X_train, y_train, class_weight='balanced'):
-    """
-    Train a LightGBM model
-    
-    Parameters:
-    -----------
-    X_train : DataFrame or array
-        Training features
-    y_train : array-like
-        Training target
-    class_weight : str or dict, default='balanced'
-        Class weights for imbalanced data
-        
-    Returns:
-    --------
-    Trained model
-    """
+def train_lightgbm(X_train, y_train):
+    """Train a LightGBM classifier"""
     print("Training LightGBM model...")
     start_time = time.time()
     
-    # Initialize model
+    # Clean feature names
+    X_train = clean_feature_names(X_train)
+    
     model = LGBMClassifier(
         n_estimators=100,
         learning_rate=0.1,
-        max_depth=7,
-        num_leaves=31,
-        class_weight=class_weight,
-        random_state=42,
-        n_jobs=-1
+        max_depth=6,
+        random_state=42
     )
-    
-    # Train model
     model.fit(X_train, y_train)
     
-    # Print training time
-    elapsed_time = time.time() - start_time
-    print(f"Training completed in {elapsed_time:.2f} seconds")
+    train_time = time.time() - start_time
+    print(f"Training completed in {train_time:.2f} seconds")
     
     return model
 
@@ -623,19 +669,34 @@ def save_model(model, model_path):
     
     print(f"Model saved to {model_path}")
 
-def main(data_dir, tune_models=False, use_feature_selection=False):
-    """
-    Main function to train and evaluate readmission prediction models
+def predict_with_lightgbm(model, X):
+    """Make predictions with LightGBM model"""
+    X = clean_feature_names(X)
+    return model.predict_proba(X)[:, 1]
+
+def find_data_directory(data_dir="data"):
+    """Find the correct data directory regardless of where the script is run from"""
+    # Try different possible locations
+    possible_paths = [
+        data_dir,                          # If run from project root
+        os.path.join("..", "..", data_dir), # If run from src/models
+        os.path.join("..", data_dir),      # If run from src
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", data_dir))  # Absolute path
+    ]
     
-    Parameters:
-    -----------
-    data_dir : str
-        Directory containing processed data
-    tune_models : bool, default=False
-        Whether to perform hyperparameter tuning
-    use_feature_selection : bool, default=False
-        Whether to perform feature selection
-    """
+    for path in possible_paths:
+        processed_path = os.path.join(path, "processed")
+        if os.path.exists(processed_path):
+            print(f"Found data directory at: {os.path.abspath(path)}")
+            return os.path.abspath(path)
+    
+    raise FileNotFoundError(f"Could not find data directory. Tried: {possible_paths}")
+
+def main(data_dir="data", tune_models=False, use_feature_selection=False):
+    """Main function to train and evaluate readmission prediction models"""
+    # Find the correct data directory
+    data_dir = find_data_directory(data_dir)
+    
     # Define paths
     processed_dir = os.path.join(data_dir, 'processed')
     models_dir = os.path.join(data_dir, '..', 'models')
@@ -649,6 +710,11 @@ def main(data_dir, tune_models=False, use_feature_selection=False):
     X_train, X_test, y_train, y_test = load_data(processed_dir)
     feature_names = X_train.columns.tolist()
     
+    # Add preprocessing step for categorical features
+    X_train, X_test = preprocess_features(X_train, X_test)
+    
+    feature_names = X_train.columns.tolist()
+
     # Perform feature selection if requested
     if use_feature_selection:
         X_train, X_test, selected_features = select_features(

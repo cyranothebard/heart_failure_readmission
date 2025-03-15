@@ -18,6 +18,90 @@ from lightgbm import LGBMRegressor
 import time
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning)
+from src.utils.feature_name_cleaner import clean_feature_names
+
+def calculate_length_of_stay(processed_dir):
+    """
+    Calculate length of stay metrics from admission and discharge times
+    
+    Parameters:
+    -----------
+    processed_dir : str
+        Path to processed data directory
+        
+    Returns:
+    --------
+    DataFrame with added LOS columns
+    """
+    # Load the full dataset
+    data_file = os.path.join(processed_dir, 'hf_data_processed.csv')
+    data = pd.read_csv(data_file)
+    
+    
+    # Since we don't have direct ICU information, we'll create an estimate
+    # based on patient complexity (comorbidities)
+    comorbidity_cols = ['hypertension', 'diabetes', 'kidney_disease', 'copd', 
+                       'atrial_fibrillation', 'coronary_artery_disease', 
+                       'obesity', 'anemia']
+    
+    # Calculate comorbidity score (sum of conditions)
+    comorbidity_score = data[comorbidity_cols].sum(axis=1)
+    
+    # Estimate ICU fraction based on comorbidities
+    # More comorbidities = higher likelihood of ICU stay and longer ICU stay
+    icu_fraction = 0.2 + (0.3 * comorbidity_score / max(comorbidity_score.max(), 1))
+    
+    # Calculate ICU days and non-ICU days
+    data['icu_los_days'] = data['total_los_days'] * icu_fraction
+    data['non_icu_los_days'] = data['total_los_days'] - data['icu_los_days']
+    
+    # Save the updated dataset
+    data.to_csv(os.path.join(processed_dir, 'hf_data_processed_with_los.csv'), index=False)
+    
+    print(f"LOS statistics:")
+    print(f"Average total LOS: {data['total_los_days'].mean():.2f} days")
+    print(f"Average estimated ICU LOS: {data['icu_los_days'].mean():.2f} days")
+    
+    # Now create train/test splits for these targets
+    # We need to match the existing train/test split
+    X_train = pd.read_csv(os.path.join(processed_dir, 'X_train.csv'))
+    X_test = pd.read_csv(os.path.join(processed_dir, 'X_test.csv'))
+    
+    # Get the hadm_ids for train and test sets
+    if 'hadm_id' in X_train.columns:
+        train_hadm_ids = set(X_train['hadm_id'])
+        test_hadm_ids = set(X_test['hadm_id'])
+        
+        # Filter the data for train and test sets
+        train_los = data[data['hadm_id'].isin(train_hadm_ids)]
+        test_los = data[data['hadm_id'].isin(test_hadm_ids)]
+    else:
+        # If hadm_id not in features, just use row indices based on proportions
+        train_size = len(X_train)
+        test_size = len(X_test)
+        total_size = train_size + test_size
+        
+        # Check if we need to sample or if we can use direct indexing
+        if len(data) == total_size:
+            train_los = data.iloc[:train_size]
+            test_los = data.iloc[train_size:]
+        else:
+            # Randomly sample rows to match sizes
+            np.random.seed(42)  # for reproducibility
+            train_indices = np.random.choice(len(data), train_size, replace=False)
+            remaining_indices = np.setdiff1d(np.arange(len(data)), train_indices)
+            test_indices = np.random.choice(remaining_indices, test_size, replace=False)
+            
+            train_los = data.iloc[train_indices]
+            test_los = data.iloc[test_indices]
+    
+    # Save the train/test splits for each target
+    for target in ['total_los_days', 'icu_los_days', 'non_icu_los_days']:
+        train_los[target].to_csv(os.path.join(processed_dir, f'{target}_train.csv'), index=False)
+        test_los[target].to_csv(os.path.join(processed_dir, f'{target}_test.csv'), index=False)
+    
+    print("Length of stay metrics calculated and saved")
+    return data
 
 def load_data(processed_dir, include_readmission_pred=True):
     """
@@ -32,50 +116,86 @@ def load_data(processed_dir, include_readmission_pred=True):
         
     Returns:
     --------
-    X_train, X_test, y_train, y_test, feature_names
+    X_train, X_test, y_train, y_test, feature_names, target_col
     """
     print(f"Loading data from {processed_dir}")
     
-    # Load the full dataset
-    data = pd.read_csv(os.path.join(processed_dir, 'hf_data_processed.csv'))
-    
     # Define target variables for resource prediction
-    # This will need to be adjusted based on your actual data
     resource_targets = ['total_los_days', 'icu_los_days', 'non_icu_los_days']
     
-    # Check which targets are available in the data
-    available_targets = [col for col in resource_targets if col in data.columns]
+    # Check if resource target files exist
+    target_files_exist = all(
+        os.path.exists(os.path.join(processed_dir, f'{target}_train.csv')) 
+        for target in resource_targets
+    )
+    
+    # Load or calculate the full dataset with LOS values
+    if not target_files_exist:
+        print("Resource target files not found, calculating length of stay metrics...")
+        full_data = calculate_length_of_stay(processed_dir)
+    else:
+        # Load the data with LOS metrics if it exists
+        los_file = os.path.join(processed_dir, 'hf_data_processed_with_los.csv')
+        if os.path.exists(los_file):
+            full_data = pd.read_csv(los_file)
+        else:
+            # Fall back to original processed data
+            full_data = pd.read_csv(os.path.join(processed_dir, 'hf_data_processed.csv'))
+    
+    # Now check which targets are available in the full data
+    available_targets = [target for target in resource_targets if target in full_data.columns]
     
     if not available_targets:
-        raise ValueError(f"None of the resource target columns {resource_targets} found in the data")
+        raise ValueError(f"No resource target columns found in the dataset")
     
     print(f"Available resource targets: {available_targets}")
     target_col = available_targets[0]  # Use the first available target
     
-    # Load train/test split for consistent comparison with readmission model
+    # Load train/test split for features
     X_train = pd.read_csv(os.path.join(processed_dir, 'X_train.csv'))
     X_test = pd.read_csv(os.path.join(processed_dir, 'X_test.csv'))
     
-    # Create y_train and y_test based on the selected target
-    # This assumes that X_train and X_test have corresponding indices to the full dataset
-    # If not, you'll need to adjust this logic
-    train_indices = X_train.index
-    test_indices = X_test.index
-    
-    # Create a copy of the data to avoid modifying the original
-    full_data = data.copy()
-    
-    # If resource targets are not available, use synthetic ones for demonstration
-    if len(available_targets) == 0:
-        print("Warning: No resource targets found. Creating synthetic targets for demonstration.")
-        # Create synthetic LOS based on patient demographics and comorbidities
-        # This is just for demonstration and should be replaced with actual data
-        full_data['total_los_days'] = np.random.gamma(shape=5, scale=2, size=len(full_data))
-        target_col = 'total_los_days'
-    
-    # Extract target values
-    y_train = full_data.iloc[train_indices][target_col].values
-    y_test = full_data.iloc[test_indices][target_col].values
+    # Find the corresponding rows in full_data for train and test sets
+    # This is tricky and depends on how your data is structured
+    # Option 1: If hadm_id is available in both datasets
+    if 'hadm_id' in X_train.columns and 'hadm_id' in full_data.columns:
+        # Use hadm_id to match rows
+        train_hadm_ids = set(X_train['hadm_id'])
+        test_hadm_ids = set(X_test['hadm_id'])
+        
+        # Extract target values by matching hadm_ids
+        y_train = full_data[full_data['hadm_id'].isin(train_hadm_ids)][target_col].values
+        y_test = full_data[full_data['hadm_id'].isin(test_hadm_ids)][target_col].values
+        
+        # Check if we got the right number of samples
+        if len(y_train) != len(X_train) or len(y_test) != len(X_test):
+            print(f"WARNING: Number of samples in target ({len(y_train)}, {len(y_test)}) " + 
+                  f"doesn't match features ({len(X_train)}, {len(X_test)})")
+            
+            # Try loading directly from files instead
+            try:
+                y_train = pd.read_csv(os.path.join(processed_dir, f'{target_col}_train.csv')).values.ravel()
+                y_test = pd.read_csv(os.path.join(processed_dir, f'{target_col}_test.csv')).values.ravel()
+                print("Loaded target values from CSV files instead")
+            except Exception as e:
+                print(f"Error loading target CSV files: {e}")
+                raise ValueError("Cannot match feature and target samples")
+    else:
+        # Option 2: Try using the target CSV files directly
+        try:
+            y_train = pd.read_csv(os.path.join(processed_dir, f'{target_col}_train.csv')).values.ravel()
+            y_test = pd.read_csv(os.path.join(processed_dir, f'{target_col}_test.csv')).values.ravel()
+        except Exception as e:
+            print(f"Error loading target CSV files: {e}")
+            
+            # Option 3: Last resort - assume samples are in the same order
+            if len(full_data) >= len(X_train) + len(X_test):
+                print("WARNING: Using order-based matching between features and targets")
+                # Assume first n rows are train, next m rows are test
+                y_train = full_data[target_col].values[:len(X_train)]
+                y_test = full_data[target_col].values[len(X_train):len(X_train)+len(X_test)]
+            else:
+                raise ValueError("Cannot determine how to match features and targets")
     
     # Include readmission predictions if requested
     if include_readmission_pred:
@@ -116,6 +236,62 @@ def load_data(processed_dir, include_readmission_pred=True):
     print(f"Target variable: {target_col} (mean value in training: {np.mean(y_train):.2f})")
     
     return X_train, X_test, y_train, y_test, X_train.columns.tolist(), target_col
+
+def preprocess_features(X_train, X_test):
+    """
+    Handle categorical features by one-hot encoding them.
+    
+    Parameters:
+    -----------
+    X_train : DataFrame
+        Training features
+    X_test : DataFrame
+        Testing features
+        
+    Returns:
+    --------
+    X_train_processed, X_test_processed
+    """
+    from sklearn.preprocessing import OneHotEncoder
+    
+    # Identify string columns
+    string_cols = X_train.select_dtypes(include=['object']).columns.tolist()
+    
+    if not string_cols:
+        print("No categorical columns found, returning original data")
+        return X_train, X_test
+    
+    print(f"Found {len(string_cols)} categorical columns to encode")
+    
+    # Keep track of non-string columns
+    non_string_cols = [col for col in X_train.columns if col not in string_cols]
+    
+    # Initialize encoder with parameters compatible with older scikit-learn versions
+    try:
+        # Try newer scikit-learn parameter
+        encoder = OneHotEncoder(sparse_output=False, drop='first', handle_unknown='ignore')
+    except TypeError:
+        # Fallback for older scikit-learn versions
+        encoder = OneHotEncoder(sparse=False, drop='first', handle_unknown='ignore')
+    
+    # Fit and transform training data
+    encoded_train = encoder.fit_transform(X_train[string_cols])
+    encoded_test = encoder.transform(X_test[string_cols])
+    
+    # Get the feature names
+    feature_names = encoder.get_feature_names_out(string_cols)
+    
+    # Create new DataFrames with encoded features
+    encoded_train_df = pd.DataFrame(encoded_train, columns=feature_names, index=X_train.index)
+    encoded_test_df = pd.DataFrame(encoded_test, columns=feature_names, index=X_test.index)
+    
+    # Combine with non-string columns
+    X_train_processed = pd.concat([X_train[non_string_cols], encoded_train_df], axis=1)
+    X_test_processed = pd.concat([X_test[non_string_cols], encoded_test_df], axis=1)
+    
+    print(f"Data shape after encoding: {X_train_processed.shape}")
+    
+    return X_train_processed, X_test_processed
 
 def train_linear_regression(X_train, y_train):
     """
@@ -257,24 +433,13 @@ def train_random_forest_regressor(X_train, y_train):
     return model
 
 def train_lightgbm_regressor(X_train, y_train):
-    """
-    Train a LightGBM regressor
-    
-    Parameters:
-    -----------
-    X_train : DataFrame or array
-        Training features
-    y_train : array-like
-        Training target
-        
-    Returns:
-    --------
-    Trained model
-    """
+    """Train a LightGBM regressor"""
     print("Training LightGBM Regressor...")
     start_time = time.time()
     
-    # Initialize model
+    # Clean feature names before training
+    X_train_clean = clean_feature_names(X_train)
+    
     model = LGBMRegressor(
         n_estimators=100,
         learning_rate=0.1,
@@ -284,10 +449,8 @@ def train_lightgbm_regressor(X_train, y_train):
         n_jobs=-1
     )
     
-    # Train model
-    model.fit(X_train, y_train)
+    model.fit(X_train_clean, y_train)
     
-    # Print training time
     elapsed_time = time.time() - start_time
     print(f"Training completed in {elapsed_time:.2f} seconds")
     
@@ -329,7 +492,6 @@ def train_quantile_regressor(X_train, y_train, quantiles=[0.5, 0.75, 0.9]):
             max_depth=4,
             learning_rate=0.1,
             random_state=42,
-            n_jobs=-1 if hasattr(GradientBoostingRegressor, 'n_jobs') else None
         )
         
         # Train model
@@ -586,7 +748,11 @@ def evaluate_model(model, X_test, y_test, model_name):
     else:
         # Standard model evaluation
         # Make predictions
-        y_pred = model.predict(X_test)
+        if 'LightGBM' in model_name:
+            X_test_clean = clean_feature_names(X_test)
+            y_pred = model.predict(X_test_clean)
+        else:
+            y_pred = model.predict(X_test)
         
         # Calculate metrics
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -916,17 +1082,9 @@ def predict_resource_needs(model, X_data, model_name, target_col):
     
     return results, summary
 
-def main(data_dir, tune_models=False):
-    """
-    Main function to train and evaluate resource utilization models
+def main(data_dir="data", output_dir="models", save_plots=True, use_cross_validation=False, tune_models=False):
+    """Main function for training and evaluating resource utilization models"""
     
-    Parameters:
-    -----------
-    data_dir : str
-        Directory containing processed data
-    tune_models : bool, default=False
-        Whether to perform hyperparameter tuning
-    """
     # Define paths
     processed_dir = os.path.join(data_dir, 'processed')
     models_dir = os.path.join(data_dir, '..', 'models')
@@ -939,6 +1097,11 @@ def main(data_dir, tune_models=False):
     # Load data
     X_train, X_test, y_train, y_test, feature_names, target_col = load_data(processed_dir)
     
+    # Add preprocessing step for categorical features
+    X_train, X_test = preprocess_features(X_train, X_test)
+    
+    feature_names = X_train.columns.tolist()
+
     # Define models to train
     models = {}
     
@@ -998,6 +1161,58 @@ def main(data_dir, tune_models=False):
             print("\nTuning Neural Network...")
             models['Neural Network (Tuned)'] = tune_hyperparameters(
                 X_tune, y_tune, model_type='mlp')
+    
+    # Add cross-validation if requested
+    if use_cross_validation:
+        print("\n=== Running cross-validation ===")
+        cv_results = {}
+        
+        # Define models for cross-validation
+        cv_models = {
+            'Linear Regression': LinearRegression(),
+            'Ridge Regression': Ridge(random_state=42),
+            'Elastic Net': ElasticNet(random_state=42),
+            'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42),
+            'LightGBM': LGBMRegressor(n_estimators=100, random_state=42)
+        }
+        
+        # Clean feature names for LightGBM
+        X_train_clean = clean_feature_names(X_train)
+        
+        # Run cross-validation for each model
+        for name, model in cv_models.items():
+            print(f"\nRunning 5-fold cross-validation for {name}...")
+            
+            # Use clean feature names for LightGBM
+            if name == 'LightGBM':
+                X_cv = X_train_clean
+            else:
+                X_cv = X_train
+                
+            # Calculate cross-validation scores
+            cv_scores = cross_val_score(
+                model, X_cv, y_train, cv=5, scoring='r2'
+            )
+            
+            cv_results[name] = {
+                'mean_r2': cv_scores.mean(),
+                'std_r2': cv_scores.std(),
+                'cv_scores': cv_scores.tolist()
+            }
+            
+            print(f"  Mean R²: {cv_scores.mean():.4f} (±{cv_scores.std():.4f})")
+        
+        # Save cross-validation results
+        cv_results_df = pd.DataFrame([{
+            'model': name,
+            'mean_r2': results['mean_r2'],
+            'std_r2': results['std_r2']
+        } for name, results in cv_results.items()])
+        
+        cv_results_df.to_csv(os.path.join(plots_dir, f'{target_col}_cv_results.csv'), index=False)
+        
+        print("\nCross-validation results:")
+        print(cv_results_df.sort_values('mean_r2', ascending=False))
     
     # Evaluate models
     metrics_list = []
@@ -1123,7 +1338,9 @@ if __name__ == "__main__":
                         help='Directory containing processed data')
     parser.add_argument('--tune', action='store_true',
                         help='Perform hyperparameter tuning')
+    parser.add_argument('--cv', action='store_true',
+                        help='Perform cross-validation')
     args = parser.parse_args()
     
     # Call main function
-    main(args.data_dir, tune_models=args.tune)
+    main(args.data_dir, tune_models=args.tune, use_cross_validation=args.cv)
