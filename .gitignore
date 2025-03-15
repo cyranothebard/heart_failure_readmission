@@ -8,6 +8,7 @@ ENV/
 # Data files
 data/
 models/
+reports/
 *.csv
 *.pkl
 *.h5
