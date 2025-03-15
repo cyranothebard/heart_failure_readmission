@@ -1,35 +1,39 @@
-# Data files
-data/raw/
-data/interim/
-data/processed/
-
-# Ignore all CSV files regardless of location
-*.csv
-*.pkl
-*.png
-
-# Python cache files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environment
+# Virtual Environment
 venv/
 env/
 ENV/
+.env
+.venv
 
-# Jupyter Notebook
+# Data files
+data/
+models/
+*.csv
+*.pkl
+*.h5
+*.npz
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
 .ipynb_checkpoints
+notebooks/
+*.ipynb
 
-# Logs
-logs/
-*.log
-
-# OS-specific files
+# IDE files
+.idea/
+.vscode/
+*.code-workspace
+*.swp
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
