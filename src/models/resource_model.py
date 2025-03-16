@@ -21,53 +21,80 @@ warnings.filterwarnings('ignore', category=UserWarning)
 from src.utils.feature_name_cleaner import clean_feature_names
 
 def calculate_length_of_stay(processed_dir):
-    """
-    Calculate length of stay metrics from admission and discharge times
+    """Calculate length of stay metrics using actual ICU data from MIMIC-IV"""
+    # Define paths
+    base_dir = os.path.dirname(os.path.dirname(processed_dir))
+    raw_dir = os.path.join(base_dir, 'raw')
     
-    Parameters:
-    -----------
-    processed_dir : str
-        Path to processed data directory
-        
-    Returns:
-    --------
-    DataFrame with added LOS columns
-    """
-    # Load the full dataset
+    # Load the processed dataset
     data_file = os.path.join(processed_dir, 'hf_data_processed.csv')
     data = pd.read_csv(data_file)
     
+    # Load ICU stays data
+    icustays_file = os.path.join(base_dir, 'raw', 'icustays.csv')
+    if not os.path.exists(icustays_file):
+        print(f"WARNING: ICU stays file not found at {icustays_file}")
+        print(f"Current working directory: {os.getcwd()}")
+        print(f"Checking absolute path: {os.path.abspath(icustays_file)}")
     
-    # Since we don't have direct ICU information, we'll create an estimate
-    # based on patient complexity (comorbidities)
-    comorbidity_cols = ['hypertension', 'diabetes', 'kidney_disease', 'copd', 
-                       'atrial_fibrillation', 'coronary_artery_disease', 
-                       'obesity', 'anemia']
+    print(f"Loading ICU stays data from {icustays_file}")
+    icustays = pd.read_csv(icustays_file)
+    # Calculate ICU stay duration in days
+    if 'intime' in icustays.columns and 'outtime' in icustays.columns:
+        icustays['intime'] = pd.to_datetime(icustays['intime'])
+        icustays['outtime'] = pd.to_datetime(icustays['outtime'])
+        icustays['los_days'] = (icustays['outtime'] - icustays['intime']).dt.total_seconds() / (24 * 60 * 60)
+    else:
+        # If los column already exists in days, just copy it
+        icustays['los_days'] = icustays['los']
+
+    # Merge ICU stays with patient data
+    print("Merging ICU data with patient records...")
+    if 'hadm_id' in data.columns and 'hadm_id' in icustays.columns:
+        # Group ICU stays by hospital admission to handle multiple ICU stays
+        icu_los_by_admission = icustays.groupby('hadm_id')['los'].sum().reset_index()
+        icu_los_by_admission.rename(columns={'los': 'icu_los_days'}, inplace=True)
+        
+        # Merge with main dataset
+        data = pd.merge(data, icu_los_by_admission, on='hadm_id', how='left')
+        
+        # Fill missing ICU LOS with 0 (no ICU stay)
+        data['icu_los_days'] = data['icu_los_days'].fillna(0)
+        
+        # Calculate ratio of ICU to total stay
+        data['icu_ratio'] = data['icu_los_days'] / data['total_los_days']
+        
+        # Handle any division by zero or NaN
+        data['icu_ratio'] = data['icu_ratio'].fillna(0).clip(0, 1)
+        
+        # Report statistics
+        print(f"Patients with ICU stays: {(data['icu_los_days'] > 0).sum()}/{len(data)} " + 
+              f"({(data['icu_los_days'] > 0).sum()/len(data):.1%})")
+        print(f"Average ICU LOS for ICU patients: {data[data['icu_los_days'] > 0]['icu_los_days'].mean():.2f} days")
+        print(f"Average total LOS: {data['total_los_days'].mean():.2f} days")
+        print(f"Average ICU ratio: {data['icu_ratio'].mean():.2%}")
+    else:
+        print("ERROR: hadm_id not found in datasets. Cannot match ICU stays.")
+
     
-    # Calculate comorbidity score (sum of conditions)
-    comorbidity_score = data[comorbidity_cols].sum(axis=1)
-    
-    # Estimate ICU fraction based on comorbidities
-    # More comorbidities = higher likelihood of ICU stay and longer ICU stay
-    icu_fraction = 0.2 + (0.3 * comorbidity_score / max(comorbidity_score.max(), 1))
-    
-    # Calculate ICU days and non-ICU days
-    data['icu_los_days'] = data['total_los_days'] * icu_fraction
-    data['non_icu_los_days'] = data['total_los_days'] - data['icu_los_days']
+    # Scale the values
+    from sklearn.preprocessing import StandardScaler
+    scaler = StandardScaler()
+    data['icu_ratio'] = scaler.fit_transform(data['icu_ratio'].values.reshape(-1, 1))
+    # Also scale the total LOS days
+    data['total_los_days'] = scaler.fit_transform(data['total_los_days'].values.reshape(-1, 1))
     
     # Save the updated dataset
     data.to_csv(os.path.join(processed_dir, 'hf_data_processed_with_los.csv'), index=False)
-    
-    print(f"LOS statistics:")
-    print(f"Average total LOS: {data['total_los_days'].mean():.2f} days")
-    print(f"Average estimated ICU LOS: {data['icu_los_days'].mean():.2f} days")
+
+    # Save the updated dataset
+    data.to_csv(os.path.join(processed_dir, 'hf_data_processed_with_los.csv'), index=False)
     
     # Now create train/test splits for these targets
     # We need to match the existing train/test split
     X_train = pd.read_csv(os.path.join(processed_dir, 'X_train.csv'))
     X_test = pd.read_csv(os.path.join(processed_dir, 'X_test.csv'))
     
-    # Get the hadm_ids for train and test sets
     if 'hadm_id' in X_train.columns:
         train_hadm_ids = set(X_train['hadm_id'])
         test_hadm_ids = set(X_test['hadm_id'])
@@ -76,18 +103,17 @@ def calculate_length_of_stay(processed_dir):
         train_los = data[data['hadm_id'].isin(train_hadm_ids)]
         test_los = data[data['hadm_id'].isin(test_hadm_ids)]
     else:
-        # If hadm_id not in features, just use row indices based on proportions
+        # If hadm_id not in features, use row indices based on proportions
         train_size = len(X_train)
         test_size = len(X_test)
-        total_size = train_size + test_size
         
-        # Check if we need to sample or if we can use direct indexing
-        if len(data) == total_size:
+        # Check if we need to sample or can use direct indexing
+        if len(data) == train_size + test_size:
             train_los = data.iloc[:train_size]
             test_los = data.iloc[train_size:]
         else:
             # Randomly sample rows to match sizes
-            np.random.seed(42)  # for reproducibility
+            np.random.seed(42)
             train_indices = np.random.choice(len(data), train_size, replace=False)
             remaining_indices = np.setdiff1d(np.arange(len(data)), train_indices)
             test_indices = np.random.choice(remaining_indices, test_size, replace=False)
@@ -96,11 +122,11 @@ def calculate_length_of_stay(processed_dir):
             test_los = data.iloc[test_indices]
     
     # Save the train/test splits for each target
-    for target in ['total_los_days', 'icu_los_days', 'non_icu_los_days']:
+    for target in ['icu_los_days', 'icu_ratio']:
         train_los[target].to_csv(os.path.join(processed_dir, f'{target}_train.csv'), index=False)
         test_los[target].to_csv(os.path.join(processed_dir, f'{target}_test.csv'), index=False)
     
-    print("Length of stay metrics calculated and saved")
+    print("Length of stay metrics calculated and saved using actual ICU data")
     return data
 
 def calculate_length_of_stay(processed_dir):
@@ -215,7 +241,7 @@ def load_data(processed_dir, include_readmission_pred=True):
     print(f"Loading data from {processed_dir}")
     
     # Define target variables for resource prediction
-    resource_targets = ['total_los_days', 'icu_los_days', 'non_icu_los_days']
+    resource_targets = ['total_los_days', 'icu_ratio']
     
     # Check if resource target files exist
     target_files_exist = all(
@@ -1014,57 +1040,37 @@ def plot_residuals(y_test, y_pred, model_name):
 
 def plot_feature_importance(model, feature_names, model_name, top_n=20):
     """
-    Plot feature importance for a model
-    
-    Parameters:
-    -----------
-    model : trained model
-        Trained model with feature_importances_ attribute or coef_ attribute
-    feature_names : list
-        List of feature names
-    model_name : str
-        Name of the model for the plot title
-    top_n : int, default=20
-        Number of top features to plot
+    Plot feature importance for a trained model
     """
-    # Check if it's a quantile model dictionary
-    if isinstance(model, dict) and list(model.keys())[0].startswith('q'):
-        # For quantile models, use the median (q50) if available
-        if 'q50' in model:
-            model_to_plot = model['q50']
-        else:
-            model_to_plot = list(model.values())[0]
-            print(f"No q50 model found. Using {list(model.keys())[0]} for feature importance.")
-    else:
-        model_to_plot = model
-    
-    # Get feature importance
-    if hasattr(model_to_plot, 'feature_importances_'):
-        importance = model_to_plot.feature_importances_
-    elif hasattr(model_to_plot, 'coef_'):
-        importance = np.abs(model_to_plot.coef_)
-    else:
-        print(f"Model {model_name} does not have feature_importances_ or coef_ attribute")
-        return None, None
-    
-    # Create DataFrame of feature importance
-    feature_importance = pd.DataFrame({
-        'Feature': feature_names,
-        'Importance': importance
-    })
-    
-    # Sort by importance
-    feature_importance = feature_importance.sort_values('Importance', ascending=False)
-    
-    # Plot top N features
     plt.figure(figsize=(10, 8))
-    sns.barplot(x='Importance', y='Feature', data=feature_importance.head(top_n))
-    plt.title(f'Top {top_n} Feature Importance - {model_name}')
-    plt.xlabel('Importance')
-    plt.ylabel('Feature')
-    plt.tight_layout()
     
-    return plt, feature_importance
+    if hasattr(model, 'feature_importances_'):
+        # Get raw importance values
+        importances = model.feature_importances_
+        
+        # Normalize to [0,1] range if it's a LightGBM model
+        if model_name.lower().startswith('lightgbm'):
+            importances = importances / importances.sum()
+            print("Normalized LightGBM feature importances to sum to 1.0")
+        
+        # Create DataFrame for sorting and plotting
+        feature_importance = pd.DataFrame({
+            'Feature': feature_names,
+            'Importance': importances
+        }).sort_values('Importance', ascending=False)
+        
+        # Print the sum of feature importance
+        print(f"Sum of feature importances: {importances.sum():.4f}")
+        
+        # Plot
+        sns.barplot(x='Importance', y='Feature', data=feature_importance.head(top_n))
+        plt.title(f'Feature Importance - {model_name}')
+        plt.tight_layout()
+        
+        return plt, feature_importance
+    else:
+        print(f"Model {model_name} doesn't support feature_importances_ attribute")
+        return None, None
 
 def save_model(model, model_path):
     """

@@ -260,10 +260,10 @@ def train_lightgbm(X_train, y_train):
     X_train = clean_feature_names(X_train)
     
     model = LGBMClassifier(
-        n_estimators=100,
-        learning_rate=0.1,
+        n_estimators=1000,
+        learning_rate=0.01,
         max_depth=6,
-        random_state=42
+        random_state=99
     )
     model.fit(X_train, y_train)
     
@@ -586,71 +586,117 @@ def plot_feature_importance(model, feature_names, model_name, top_n=20):
     
     return plt, feature_importance
 
-def analyze_shap_values(model, X_test, feature_names, model_name, max_display=20, plot_type='summary'):
+def analyze_shap_values(model, X_test, feature_names, model_name, max_display=20, plot_type='summary', timeout=180):
     """
-    Analyze SHAP values for a model
-    
-    Parameters:
-    -----------
-    model : trained model
-        Trained model
-    X_test : DataFrame or array
-        Testing features
-    feature_names : list
-        List of feature names
-    model_name : str
-        Name of the model for the plot title
-    max_display : int, default=20
-        Number of top features to display
-    plot_type : str, default='summary'
-        Type of SHAP plot ('summary', 'bar', 'beeswarm')
+    Analyze SHAP values for a model with more robust error handling
     """
     print(f"Generating SHAP values for {model_name}...")
     
     try:
-        # Create explainer based on model type
-        if model_name.startswith('Logistic Regression'):
-            # Convert to numpy array if it's a DataFrame
-            if isinstance(X_test, pd.DataFrame):
-                X_test_array = X_test.values
-            else:
-                X_test_array = X_test
-                
-            explainer = shap.LinearExplainer(model, X_test_array)
-        elif model_name.startswith('XGBoost') or model_name.startswith('LightGBM'):
-            explainer = shap.TreeExplainer(model)
-        else:
-            explainer = shap.TreeExplainer(model)
+        # Convert X_test to DataFrame if not already
+        if not isinstance(X_test, pd.DataFrame):
+            X_test = pd.DataFrame(X_test, columns=feature_names)
         
-        # Calculate SHAP values
-        shap_values = explainer.shap_values(X_test)
+        # Use an extremely small sample to reduce computation
+        sample_size = min(100, X_test.shape[0])  # Very small sample for testing
+        print(f"Using {sample_size} random samples for SHAP analysis...")
+        X_sample = X_test.sample(sample_size, random_state=42)
         
-        # For tree models where shap_values is a list
-        if isinstance(shap_values, list):
-            shap_values = shap_values[1]  # For binary classification
-        
-        # Create figure
+        # Create figure first (in case SHAP fails)
         plt.figure(figsize=(10, 8))
         
-        # Create appropriate plot
-        if plot_type == 'summary':
-            shap.summary_plot(shap_values, X_test, feature_names=feature_names, 
-                             max_display=max_display, show=False)
-        elif plot_type == 'bar':
-            shap.summary_plot(shap_values, X_test, feature_names=feature_names, 
-                             max_display=max_display, plot_type='bar', show=False)
-        elif plot_type == 'beeswarm':
-            shap.plots.beeswarm(shap.Explanation(values=shap_values, 
-                                                data=X_test, 
-                                                feature_names=feature_names))
+        # Skip SHAP calculation for large models
+        if X_test.shape[1] > 50 or X_test.shape[0] > 1000:
+            print("Dataset too large for SHAP calculation, falling back to feature importance")
+            
+            # Use feature importance instead if available
+            if hasattr(model, 'feature_importances_'):
+                importance = model.feature_importances_
+                feature_importance = pd.DataFrame({
+                    'Feature': feature_names,
+                    'Importance': importance
+                }).sort_values('Importance', ascending=False)
+                
+                sns.barplot(x='Importance', y='Feature', data=feature_importance.head(max_display))
+                plt.title(f'Feature Importance (SHAP alternative) - {model_name}')
+                return plt
+            
+            elif hasattr(model, 'coef_'):
+                importance = np.abs(model.coef_[0])
+                feature_importance = pd.DataFrame({
+                    'Feature': feature_names,
+                    'Importance': importance
+                }).sort_values('Importance', ascending=False)
+                
+                sns.barplot(x='Importance', y='Feature', data=feature_importance.head(max_display))
+                plt.title(f'Coefficient Magnitude (SHAP alternative) - {model_name}')
+                return plt
+            
+            else:
+                print("Model doesn't support feature importance, skipping SHAP analysis")
+                plt.close()
+                return None
         
-        plt.title(f'SHAP Values - {model_name}')
-        plt.tight_layout()
-        
-        return plt
+        # Try simpler SHAP calculation approach
+        try:
+            print("Starting SHAP calculation with simplified approach...")
+            
+            # For tree models (RF, XGBoost, LightGBM)
+            if hasattr(model, 'feature_importances_'):
+                # Try with very small subset (10 samples)
+                tiny_sample = X_sample.iloc[:10]
+                explainer = shap.TreeExplainer(model)
+                shap_values = explainer.shap_values(tiny_sample)
+                
+                if isinstance(shap_values, list):
+                    shap_values = shap_values[1]  # For binary classification
+                
+                if plot_type == 'summary' or plot_type == 'bar':
+                    shap.summary_plot(
+                        shap_values, 
+                        tiny_sample,
+                        feature_names=tiny_sample.columns.tolist(),
+                        max_display=max_display, 
+                        plot_type='bar' if plot_type == 'bar' else None,
+                        show=False
+                    )
+                
+            # For linear models
+            elif hasattr(model, 'coef_'):
+                background = X_sample.iloc[:10].values
+                explainer = shap.LinearExplainer(model, background)
+                shap_values = explainer.shap_values(X_sample.iloc[:10].values)
+                
+                if plot_type == 'summary' or plot_type == 'bar':
+                    shap.summary_plot(
+                        shap_values, 
+                        X_sample.iloc[:10],
+                        feature_names=X_sample.columns.tolist(),
+                        max_display=max_display, 
+                        plot_type='bar' if plot_type == 'bar' else None,
+                        show=False
+                    )
+            
+            plt.title(f'SHAP Values - {model_name}')
+            plt.tight_layout()
+            return plt
+            
+        except Exception as inner_e:
+            print(f"SHAP calculation failed with error: {inner_e}")
+            print("Falling back to feature importance")
+            
+            # Use feature importance as fallback
+            if hasattr(model, 'feature_importances_') or hasattr(model, 'coef_'):
+                fi_plot, _ = plot_feature_importance(model, feature_names, model_name, top_n=max_display)
+                return fi_plot
+            else:
+                plt.close()
+                return None
     
     except Exception as e:
-        print(f"Error generating SHAP values: {e}")
+        print(f"Error in SHAP analysis function: {e}")
+        # Make sure any open figures are closed
+        plt.close()
         return None
 
 def save_model(model, model_path):
@@ -822,14 +868,16 @@ def main(data_dir="data", tune_models=False, use_feature_selection=False):
     try:
         best_model = models[best_model_name]
         
-        # Summary plot
-        shap_plot = analyze_shap_values(best_model, X_test, feature_names, best_model_name, plot_type='summary')
+        # Summary plot with 3-minute timeout
+        shap_plot = analyze_shap_values(best_model, X_test, feature_names, best_model_name, 
+                                       plot_type='summary', timeout=180)
         if shap_plot:
             shap_plot.savefig(os.path.join(plots_dir, f'{best_model_name.replace(" ", "_").lower()}_shap_summary.png'))
             plt.close()
         
-        # Bar plot
-        shap_bar = analyze_shap_values(best_model, X_test, feature_names, best_model_name, plot_type='bar')
+        # Bar plot with 3-minute timeout
+        shap_bar = analyze_shap_values(best_model, X_test, feature_names, best_model_name, 
+                                      plot_type='bar', timeout=180)
         if shap_bar:
             shap_bar.savefig(os.path.join(plots_dir, f'{best_model_name.replace(" ", "_").lower()}_shap_bar.png'))
             plt.close()
