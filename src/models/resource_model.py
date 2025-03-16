@@ -18,6 +18,90 @@ from lightgbm import LGBMRegressor
 import time
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning)
+from src.utils.feature_name_cleaner import clean_feature_names
+
+def calculate_length_of_stay(processed_dir):
+    """
+    Calculate length of stay metrics from admission and discharge times
+    
+    Parameters:
+    -----------
+    processed_dir : str
+        Path to processed data directory
+        
+    Returns:
+    --------
+    DataFrame with added LOS columns
+    """
+    # Load the full dataset
+    data_file = os.path.join(processed_dir, 'hf_data_processed.csv')
+    data = pd.read_csv(data_file)
+    
+    
+    # Since we don't have direct ICU information, we'll create an estimate
+    # based on patient complexity (comorbidities)
+    comorbidity_cols = ['hypertension', 'diabetes', 'kidney_disease', 'copd', 
+                       'atrial_fibrillation', 'coronary_artery_disease', 
+                       'obesity', 'anemia']
+    
+    # Calculate comorbidity score (sum of conditions)
+    comorbidity_score = data[comorbidity_cols].sum(axis=1)
+    
+    # Estimate ICU fraction based on comorbidities
+    # More comorbidities = higher likelihood of ICU stay and longer ICU stay
+    icu_fraction = 0.2 + (0.3 * comorbidity_score / max(comorbidity_score.max(), 1))
+    
+    # Calculate ICU days and non-ICU days
+    data['icu_los_days'] = data['total_los_days'] * icu_fraction
+    data['non_icu_los_days'] = data['total_los_days'] - data['icu_los_days']
+    
+    # Save the updated dataset
+    data.to_csv(os.path.join(processed_dir, 'hf_data_processed_with_los.csv'), index=False)
+    
+    print(f"LOS statistics:")
+    print(f"Average total LOS: {data['total_los_days'].mean():.2f} days")
+    print(f"Average estimated ICU LOS: {data['icu_los_days'].mean():.2f} days")
+    
+    # Now create train/test splits for these targets
+    # We need to match the existing train/test split
+    X_train = pd.read_csv(os.path.join(processed_dir, 'X_train.csv'))
+    X_test = pd.read_csv(os.path.join(processed_dir, 'X_test.csv'))
+    
+    # Get the hadm_ids for train and test sets
+    if 'hadm_id' in X_train.columns:
+        train_hadm_ids = set(X_train['hadm_id'])
+        test_hadm_ids = set(X_test['hadm_id'])
+        
+        # Filter the data for train and test sets
+        train_los = data[data['hadm_id'].isin(train_hadm_ids)]
+        test_los = data[data['hadm_id'].isin(test_hadm_ids)]
+    else:
+        # If hadm_id not in features, just use row indices based on proportions
+        train_size = len(X_train)
+        test_size = len(X_test)
+        total_size = train_size + test_size
+        
+        # Check if we need to sample or if we can use direct indexing
+        if len(data) == total_size:
+            train_los = data.iloc[:train_size]
+            test_los = data.iloc[train_size:]
+        else:
+            # Randomly sample rows to match sizes
+            np.random.seed(42)  # for reproducibility
+            train_indices = np.random.choice(len(data), train_size, replace=False)
+            remaining_indices = np.setdiff1d(np.arange(len(data)), train_indices)
+            test_indices = np.random.choice(remaining_indices, test_size, replace=False)
+            
+            train_los = data.iloc[train_indices]
+            test_los = data.iloc[test_indices]
+    
+    # Save the train/test splits for each target
+    for target in ['total_los_days', 'icu_los_days', 'non_icu_los_days']:
+        train_los[target].to_csv(os.path.join(processed_dir, f'{target}_train.csv'), index=False)
+        test_los[target].to_csv(os.path.join(processed_dir, f'{target}_test.csv'), index=False)
+    
+    print("Length of stay metrics calculated and saved")
+    return data
 
 def calculate_length_of_stay(processed_dir):
     """
@@ -443,24 +527,13 @@ def train_random_forest_regressor(X_train, y_train):
     return model
 
 def train_lightgbm_regressor(X_train, y_train):
-    """
-    Train a LightGBM regressor
-    
-    Parameters:
-    -----------
-    X_train : DataFrame or array
-        Training features
-    y_train : array-like
-        Training target
-        
-    Returns:
-    --------
-    Trained model
-    """
+    """Train a LightGBM regressor"""
     print("Training LightGBM Regressor...")
     start_time = time.time()
     
-    # Initialize model
+    # Clean feature names before training
+    X_train_clean = clean_feature_names(X_train)
+    
     model = LGBMRegressor(
         n_estimators=100,
         learning_rate=0.1,
@@ -470,10 +543,8 @@ def train_lightgbm_regressor(X_train, y_train):
         n_jobs=-1
     )
     
-    # Train model
-    model.fit(X_train, y_train)
+    model.fit(X_train_clean, y_train)
     
-    # Print training time
     elapsed_time = time.time() - start_time
     print(f"Training completed in {elapsed_time:.2f} seconds")
     
@@ -771,7 +842,11 @@ def evaluate_model(model, X_test, y_test, model_name):
     else:
         # Standard model evaluation
         # Make predictions
-        y_pred = model.predict(X_test)
+        if 'LightGBM' in model_name:
+            X_test_clean = clean_feature_names(X_test)
+            y_pred = model.predict(X_test_clean)
+        else:
+            y_pred = model.predict(X_test)
         
         # Calculate metrics
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
@@ -1101,17 +1176,9 @@ def predict_resource_needs(model, X_data, model_name, target_col):
     
     return results, summary
 
-def main(data_dir, tune_models=False):
-    """
-    Main function to train and evaluate resource utilization models
+def main(data_dir="data", output_dir="models", save_plots=True, use_cross_validation=False, tune_models=False):
+    """Main function for training and evaluating resource utilization models"""
     
-    Parameters:
-    -----------
-    data_dir : str
-        Directory containing processed data
-    tune_models : bool, default=False
-        Whether to perform hyperparameter tuning
-    """
     # Define paths
     processed_dir = os.path.join(data_dir, 'processed')
     models_dir = os.path.join(data_dir, '..', 'models')
@@ -1188,6 +1255,58 @@ def main(data_dir, tune_models=False):
             print("\nTuning Neural Network...")
             models['Neural Network (Tuned)'] = tune_hyperparameters(
                 X_tune, y_tune, model_type='mlp')
+    
+    # Add cross-validation if requested
+    if use_cross_validation:
+        print("\n=== Running cross-validation ===")
+        cv_results = {}
+        
+        # Define models for cross-validation
+        cv_models = {
+            'Linear Regression': LinearRegression(),
+            'Ridge Regression': Ridge(random_state=42),
+            'Elastic Net': ElasticNet(random_state=42),
+            'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42),
+            'LightGBM': LGBMRegressor(n_estimators=100, random_state=42)
+        }
+        
+        # Clean feature names for LightGBM
+        X_train_clean = clean_feature_names(X_train)
+        
+        # Run cross-validation for each model
+        for name, model in cv_models.items():
+            print(f"\nRunning 5-fold cross-validation for {name}...")
+            
+            # Use clean feature names for LightGBM
+            if name == 'LightGBM':
+                X_cv = X_train_clean
+            else:
+                X_cv = X_train
+                
+            # Calculate cross-validation scores
+            cv_scores = cross_val_score(
+                model, X_cv, y_train, cv=5, scoring='r2'
+            )
+            
+            cv_results[name] = {
+                'mean_r2': cv_scores.mean(),
+                'std_r2': cv_scores.std(),
+                'cv_scores': cv_scores.tolist()
+            }
+            
+            print(f"  Mean R²: {cv_scores.mean():.4f} (±{cv_scores.std():.4f})")
+        
+        # Save cross-validation results
+        cv_results_df = pd.DataFrame([{
+            'model': name,
+            'mean_r2': results['mean_r2'],
+            'std_r2': results['std_r2']
+        } for name, results in cv_results.items()])
+        
+        cv_results_df.to_csv(os.path.join(plots_dir, f'{target_col}_cv_results.csv'), index=False)
+        
+        print("\nCross-validation results:")
+        print(cv_results_df.sort_values('mean_r2', ascending=False))
     
     # Evaluate models
     metrics_list = []
@@ -1313,7 +1432,9 @@ if __name__ == "__main__":
                         help='Directory containing processed data')
     parser.add_argument('--tune', action='store_true',
                         help='Perform hyperparameter tuning')
+    parser.add_argument('--cv', action='store_true',
+                        help='Perform cross-validation')
     args = parser.parse_args()
     
     # Call main function
-    main(args.data_dir, tune_models=args.tune)
+    main(args.data_dir, tune_models=args.tune, use_cross_validation=args.cv)
