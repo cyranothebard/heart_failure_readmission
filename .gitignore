@@ -26,28 +26,27 @@ reports/figures/*.png
 !data/interim/.gitkeep
 !data/processed/.gitkeep
 
-# Python cache files
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Virtual environment
-venv/
-env/
-ENV/
-
-# Jupyter Notebook
+# Jupyter
 .ipynb_checkpoints
+notebooks/
+*.ipynb
 
-# Logs
-logs/
-*.log
-
-# OS-specific files
+# IDE files
+.idea/
+.vscode/
+*.code-workspace
+*.swp
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
