@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Heart Failure Readmission Prediction - Dependencies
 # Core data science libraries
 numpy>=1.21.0
@@ -69,3 +70,15 @@ ipykernel>=6.0.0
 # torch>=1.9.0
 # torchvision>=0.10.0
 # cupy>=9.0.0
+=======
+# Requires Python 3.7+
+kagglehub
+lightgbm==4.6.0
+matplotlib
+numpy
+pandas
+scikit_learn
+seaborn
+shap
+xgboost
+>>>>>>> origin/dev_cyranothebard
