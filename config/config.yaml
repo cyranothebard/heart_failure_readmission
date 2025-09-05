@@ -1,0 +1,174 @@
+# Heart Failure Readmission Prediction - Configuration
+# Configuration settings for clinical ML system
+
+# Data Configuration
+data:
+  # MIMIC-IV database settings
+  mimic:
+    database_path: "data/raw/mimic-iv"
+    version: "2.0"
+    chunk_size: 10000
+    
+  # Feature engineering settings
+  features:
+    # Clinical feature categories
+    clinical:
+      - icd_codes
+      - vital_signs
+      - lab_values
+      - medications
+      - procedures
+      
+    # Temporal features
+    temporal:
+      - length_of_stay
+      - admission_time
+      - discharge_time
+      - vital_trends
+      
+    # Demographics
+    demographics:
+      - age
+      - gender
+      - race
+      - insurance_type
+      
+  # Data validation
+  validation:
+    missing_data_threshold: 0.3
+    outlier_detection: true
+    data_quality_checks: true
+
+# Model Configuration
+models:
+  # Model selection and hyperparameters
+  logistic_regression:
+    C: 1.0
+    max_iter: 1000
+    random_state: 42
+    solver: "liblinear"
+    
+  random_forest:
+    n_estimators: 100
+    max_depth: 10
+    min_samples_split: 5
+    min_samples_leaf: 2
+    random_state: 42
+    
+  xgboost:
+    n_estimators: 100
+    max_depth: 6
+    learning_rate: 0.1
+    subsample: 0.8
+    colsample_bytree: 0.8
+    random_state: 42
+    
+  # Model evaluation
+  evaluation:
+    cv_folds: 5
+    test_size: 0.2
+    random_state: 42
+    scoring_metrics:
+      - accuracy
+      - precision
+      - recall
+      - f1
+      - roc_auc
+
+# Healthcare Economics Configuration
+healthcare_economics:
+  # Cost parameters
+  costs:
+    avg_readmission_cost: 15000  # USD
+    intervention_cost: 2000      # USD per patient
+    nursing_hour_cost: 75        # USD per hour
+    
+  # Resource optimization
+  resource_optimization:
+    base_nursing_hours: 8        # Hours per day
+    high_risk_additional: 4      # Additional hours for high-risk patients
+    medium_risk_additional: 2    # Additional hours for medium-risk patients
+    
+  # ROI calculation
+  roi:
+    discount_rate: 0.1
+    time_horizon: 3  # years
+    intervention_success_rate: 0.7
+
+# Clinical Configuration
+clinical:
+  # Risk stratification thresholds
+  risk_thresholds:
+    high_risk: 0.7
+    medium_risk: 0.4
+    low_risk: 0.0
+    
+  # Clinical validation
+  validation:
+    clinical_feature_importance: true
+    medical_knowledge_alignment: true
+    interpretability_requirements: true
+    
+  # Regulatory compliance
+  compliance:
+    hipaa_compliant: true
+    fda_ai_guidelines: true
+    clinical_validation: true
+
+# System Configuration
+system:
+  # Performance requirements
+  performance:
+    max_processing_time: 30  # seconds
+    max_memory_usage: 8      # GB
+    concurrent_users: 100
+    
+  # Logging and monitoring
+  logging:
+    level: "INFO"
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file: "logs/heart_failure_ml.log"
+    
+  # Security
+  security:
+    data_encryption: true
+    access_control: true
+    audit_logging: true
+
+# Output Configuration
+output:
+  # Results directory
+  results_dir: "results"
+  
+  # Visualization settings
+  visualization:
+    figure_size: [12, 8]
+    dpi: 300
+    style: "seaborn-v0_8"
+    
+  # Report generation
+  reports:
+    generate_html: true
+    generate_pdf: true
+    include_plots: true
+    include_metrics: true
+
+# Development Configuration
+development:
+  # Testing
+  testing:
+    run_tests: true
+    coverage_threshold: 80
+    test_data_size: 1000
+    
+  # Debugging
+  debugging:
+    debug_mode: false
+    verbose_logging: false
+    save_intermediate_results: false
+    
+  # Development tools
+  tools:
+    use_jupyter: true
+    enable_profiling: false
+    memory_profiling: false
